@@ -110,11 +110,8 @@
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
             cargo
-            clippy
             msitools
             pkgsCrossMingw.stdenv.cc
-            rust-analyzer
-            rustfmt
             rustup
             wine
           ];

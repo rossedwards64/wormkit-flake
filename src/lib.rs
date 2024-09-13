@@ -6,18 +6,14 @@ use windows::{
     core::{self, PCWSTR},
     Win32::{
         Foundation::{self, HINSTANCE},
-        Storage::FileSystem::{self},
-        System::LibraryLoader,
-        System::SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH},
+        Storage::FileSystem::{self, VS_FIXEDFILEINFO},
+        System::{
+            LibraryLoader,
+            SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH},
+        },
         UI,
     },
 };
-
-const VV1: u32 = 3;
-const VV2: u32 = 8;
-const VV3: u32 = 1;
-
-const DW_SIGNATURE: u32 = 0xFEEF04BD;
 
 macro_rules! hiword {
     ($l:expr) => {
@@ -33,16 +29,32 @@ macro_rules! loword {
 
 #[no_mangle]
 #[allow(unused_variables, improper_ctypes_definitions)]
-pub extern "system" fn DllMain(dll_module: HINSTANCE, call_reason: u32, _: *mut c_void) -> bool {
+pub extern "system" fn DllMain(module_handle: HINSTANCE, call_reason: u32, _: *mut c_void) -> bool {
     match call_reason {
         DLL_PROCESS_ATTACH => {
             unsafe {
-                UI::WindowsAndMessaging::MessageBoxW(
-                    Foundation::HWND::default(),
-                    core::w!("The version of your game is 3.8.1."),
-                    core::w!("wkVersionCheck"),
-                    UI::WindowsAndMessaging::MB_OK | UI::WindowsAndMessaging::MB_ICONERROR,
-                );
+                let file_info = check_version(module_handle);
+                if let Some(file_info) = file_info {
+                    let version_msg = format!(
+                        "The version of your game is {}.{}.{}.",
+                        hiword!(file_info.dwFileDateMS),
+                        loword!(file_info.dwFileDateMS),
+                        hiword!(file_info.dwFileDateLS)
+                    );
+                    UI::WindowsAndMessaging::MessageBoxW(
+                        Foundation::HWND::default(),
+                        PCWSTR::from_raw(version_msg.encode_utf16().collect::<Vec<u16>>().as_ptr()),
+                        core::w!("wkVersionCheck"),
+                        UI::WindowsAndMessaging::MB_OK,
+                    );
+                } else {
+                    UI::WindowsAndMessaging::MessageBoxW(
+                        Foundation::HWND::default(),
+                        core::w!("Couldn't find version information!"),
+                        core::w!("wkVersionCheck"),
+                        UI::WindowsAndMessaging::MB_ICONERROR,
+                    );
+                }
             }
             true
         }
@@ -51,23 +63,24 @@ pub extern "system" fn DllMain(dll_module: HINSTANCE, call_reason: u32, _: *mut 
     }
 }
 
-fn check_version(dll_module: HINSTANCE) -> bool {
+fn check_version(module_handle: HINSTANCE) -> Option<VS_FIXEDFILEINFO> {
+    let mut result = None;
     unsafe {
-        let mut mod_info = make_buffer();
-        let mod_info_buf = mod_info.as_mut_slice();
-        LibraryLoader::GetModuleFileNameW(dll_module, mod_info_buf);
+        let mut module_info = make_buffer();
+        let module_info_buf = module_info.as_mut_slice();
+        LibraryLoader::GetModuleFileNameW(module_handle, module_info_buf);
 
-        let mod_name = PCWSTR::from_raw(mod_info_buf.as_ptr());
-        let handle: Option<*mut u32> = Some(&mut u32::default());
-        let size = FileSystem::GetFileVersionInfoSizeW(mod_name, handle);
+        let module_name = PCWSTR::from_raw(module_info_buf.as_ptr());
+        let file_handle: *mut u32 = &mut u32::default();
+        let size = FileSystem::GetFileVersionInfoSizeW(module_name, Some(file_handle));
 
         if size != 0 {
             let ver_info_buf = make_buffer().as_mut_ptr();
 
-            let _ = FileSystem::GetFileVersionInfoW(mod_name, u32::default(), size, ver_info_buf);
+            let _ = FileSystem::GetFileVersionInfoW(module_name, *file_handle, size, ver_info_buf);
 
             let mut file_info =
-                &mut FileSystem::VS_FIXEDFILEINFO::default() as *mut _ as *mut c_void;
+                std::ptr::from_mut(&mut VS_FIXEDFILEINFO::default()).cast::<c_void>();
 
             if FileSystem::VerQueryValueW(
                 ver_info_buf,
@@ -77,22 +90,16 @@ fn check_version(dll_module: HINSTANCE) -> bool {
             )
             .as_bool()
             {
-                let file_info = *(file_info as *mut FileSystem::VS_FIXEDFILEINFO);
-
-                file_info.dwSignature == DW_SIGNATURE
-                    && hiword!(file_info.dwFileVersionMS) == VV1
-                    && loword!(file_info.dwFileVersionMS) == VV2
-                    && hiword!(file_info.dwFileVersionLS) == VV3
-            } else {
-                panic!("Couldn't get version info from file!")
+                result = Some(*file_info.cast::<FileSystem::VS_FIXEDFILEINFO>());
             }
         } else {
             panic!("Error getting file info size!")
         }
     }
+    result
 }
 
-fn detach() -> bool {
+const fn detach() -> bool {
     true
 }
 
